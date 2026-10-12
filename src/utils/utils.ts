@@ -48,11 +48,9 @@ const getNflGames = async () => {
     if (data.length < 100) break;
   }
 
-  // sort the games by start time, then filter out any games that have already ended
+  // sort the games by start time
   console.log(games.values());
-  return [...games.values()]
-    .sort(byStartTime)
-    .filter((g) => new Date(g.endDate).getTime() > Date.now());
+  return [...games.values()].sort(byStartTime);
 };
 
 export const useGetNflGames = () => {

@@ -49,10 +49,16 @@ function NFLMarketDashboard() {
       setPricesPerMarket((prev) => {
         const next = new Map(prev);
 
-        const existing = pricesPerMarket.get(msg.asset_id);
+        const existing = prev.get(msg.asset_id);
         next.set(msg.asset_id, {
-          bid: Math.max(...msg.bids.map((b) => Number(b.price)), 0),
-          ask: Math.min(...msg.asks.map((a) => Number(a.price)), 0),
+          bid:
+            msg.bids.length > 0
+              ? Math.max(...msg.bids.map((b) => Number(b.price)))
+              : null,
+          ask:
+            msg.asks.length > 0
+              ? Math.min(...msg.asks.map((a) => Number(a.price)))
+              : null,
           lastTrade: msg.last_trade_price
             ? Number(msg.last_trade_price)
             : (existing?.lastTrade ?? null),
@@ -61,25 +67,27 @@ function NFLMarketDashboard() {
         return next;
       });
     } else if (msg.event_type === "price_change") {
-      for (const change of msg.price_changes) {
-        setPricesPerMarket((prev) => {
-          const next = new Map(prev);
+      setPricesPerMarket((prev) => {
+        const next = new Map(prev);
 
-          const existing = pricesPerMarket.get(change.asset_id) ?? EMPTY_PRICES;
+        for (const change of msg.price_changes) {
+          const existing = next.get(change.asset_id) ?? EMPTY_PRICES;
 
           next.set(change.asset_id, {
             bid: change.best_bid ? Number(change.best_bid) : existing.bid,
             ask: change.best_ask ? Number(change.best_ask) : existing.ask,
             lastTrade: existing.lastTrade,
           });
+        }
 
-          return next;
-        });
-      }
+        return next;
+      });
+
+      return;
     } else if (msg.event_type === "last_trade_price") {
       setPricesPerMarket((prev) => {
         const next = new Map(prev);
-        const existing = pricesPerMarket.get(msg.asset_id) ?? EMPTY_PRICES;
+        const existing = prev.get(msg.asset_id) ?? EMPTY_PRICES;
 
         next.set(msg.asset_id, {
           ...existing,
@@ -276,8 +284,12 @@ function MarketRow({
         <strong>{market.outcome}</strong>
         <small>{market.question}</small>
       </th>
-      <td className="bid" data-label="Best bid">{formatPrice(bid)}</td>
-      <td className="ask" data-label="Best ask">{formatPrice(ask)}</td>
+      <td className="bid" data-label="Best bid">
+        {formatPrice(bid)}
+      </td>
+      <td className="ask" data-label="Best ask">
+        {formatPrice(ask)}
+      </td>
       <td data-label="Last trade">{formatPrice(lastTrade)}</td>
       <td data-label="Spread">{formatPrice(spread)}</td>
     </tr>
@@ -287,6 +299,5 @@ function MarketRow({
 function formatPrice(price: number | null) {
   return price === null || Number.isNaN(price) ? "—" : price.toFixed(3);
 }
-
 
 export default App;

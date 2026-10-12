@@ -49,7 +49,6 @@ const getNflGames = async () => {
   }
 
   // sort the games by start time
-  console.log(games.values());
   return [...games.values()].sort(byStartTime);
 };
 

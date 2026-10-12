@@ -11,6 +11,41 @@ const byStartTime = (a: GammaEvent, b: GammaEvent) => {
   return new Date(a.startTime).getTime() - new Date(b.startTime).getTime();
 };
 
+const isGammaEvent = (value: unknown): value is GammaEvent => {
+  if (!value || typeof value !== "object") return false;
+
+  const event = value as Partial<GammaEvent>;
+  return (
+    typeof event.id === "string" &&
+    typeof event.slug === "string" &&
+    typeof event.title === "string" &&
+    typeof event.startTime === "string" &&
+    Array.isArray(event.markets)
+  );
+};
+
+const isMarketWithOutcomes = (
+  value: unknown,
+): value is {
+  question: string;
+  outcomes: string[] | string;
+  clobTokenIds: string[] | string;
+} => {
+  if (!value || typeof value !== "object") return false;
+
+  const market = value as {
+    question?: unknown;
+    outcomes?: unknown;
+    clobTokenIds?: unknown;
+  };
+  return (
+    typeof market.question === "string" &&
+    (typeof market.outcomes === "string" || Array.isArray(market.outcomes)) &&
+    (typeof market.clobTokenIds === "string" ||
+      Array.isArray(market.clobTokenIds))
+  );
+};
+
 const getNflGames = async () => {
   const games = new Map<string, GammaEvent>();
   const slugRe = /^nfl-[a-z]{2,4}-[a-z]{2,4}-\d{4}-\d{2}-\d{2}$/;
@@ -35,11 +70,14 @@ const getNflGames = async () => {
       );
     }
 
-    const data = await res.json();
+    const data: unknown = await res.json();
+    if (!Array.isArray(data)) {
+      throw new Error("Gamma API returned an invalid events response");
+    }
 
     for (const ev of data) {
       // only add an event to our games map if it matches the provided regex
-      if (slugRe.test(ev.slug)) {
+      if (isGammaEvent(ev) && slugRe.test(ev.slug)) {
         games.set(ev.slug, ev);
       }
     }
@@ -57,13 +95,27 @@ export const useGetNflGames = () => {
   return useQuery({
     queryKey: ["nflGames"],
     queryFn: getNflGames,
-    // not adding any stale time/refetch mechanisms at this point
+    staleTime: 30_000,
+    refetchInterval: 60_000,
   });
 };
 
-const parseStringArray = (str: string[] | string): string[] => {
-  const parsed = typeof str === "string" ? JSON.parse(str) : str;
-  return Array.isArray(parsed) ? parsed : [];
+const parseStringArray = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value.every((item) => typeof item === "string") ? value : [];
+  }
+
+  if (typeof value !== "string") return [];
+
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) &&
+      parsed.every((item) => typeof item === "string")
+      ? parsed
+      : [];
+  } catch {
+    return [];
+  }
 };
 
 export const getMarketsForGame = (gameEv: GammaEvent | null) => {
@@ -73,7 +125,7 @@ export const getMarketsForGame = (gameEv: GammaEvent | null) => {
   const totalPrefix = `${gameEv.title}: O/U `;
   const totalRegex = /^\d+(?:\.\d+)?$/;
 
-  const filteredMarkets = gameEv.markets.filter(
+  const filteredMarkets = gameEv.markets.filter(isMarketWithOutcomes).filter(
     (m) =>
       m.question === gameEv.title ||
       // check if question starts with `title: O/U `

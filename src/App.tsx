@@ -16,6 +16,12 @@ import type {
 } from "./types/gamma-api";
 
 const queryClient = new QueryClient();
+const SUPPORTED_EVENT_TYPES = new Set([
+  "book",
+  "price_change",
+  "last_trade_price",
+  "tick_size_change",
+]);
 const EMPTY_PRICES: MarketPrice = {
   bid: null,
   ask: null,
@@ -28,6 +34,13 @@ const EMPTY_PRICES: MarketPrice = {
     spread: null,
   },
 };
+
+function isMarketMessage(value: unknown): value is MarketMessage {
+  if (!value || typeof value !== "object") return false;
+
+  const eventType = (value as { event_type?: unknown }).event_type;
+  return typeof eventType === "string" && SUPPORTED_EVENT_TYPES.has(eventType);
+}
 
 function getSpread(bid: number | null, ask: number | null) {
   return bid !== null && ask !== null ? ask - bid : null;
@@ -74,6 +87,7 @@ function NFLMarketDashboard() {
   const subscribedIdsRef = useRef<string[]>([]);
   const desiredIdsRef = useRef<string[]>([]);
   const activeAssetIdsRef = useRef(new Set<string>());
+  const initializedAssetIdsRef = useRef(new Set<string>());
   const intentionallyClosedRef = useRef(false);
 
   const { data: games, isLoading, error } = useGetNflGames();
@@ -101,6 +115,9 @@ function NFLMarketDashboard() {
   const handleMessage = useCallback((msg: MarketMessage) => {
     if (msg.event_type === "book") {
       if (!activeAssetIdsRef.current.has(msg.asset_id)) return;
+      if (initializedAssetIdsRef.current.has(msg.asset_id)) return;
+
+      initializedAssetIdsRef.current.add(msg.asset_id);
 
       setPricesPerMarket((prev) => {
         const existing = prev.get(msg.asset_id);
@@ -282,61 +299,70 @@ function NFLMarketDashboard() {
     [],
   );
 
-  const connect = useCallback(() => {
-    if (
-      socketRef.current?.readyState === WebSocket.CONNECTING ||
-      socketRef.current?.readyState === WebSocket.OPEN
-    ) {
-      return;
-    }
-
-    const socket = new WebSocket(
-      "wss://ws-subscriptions-clob.polymarket.com/ws/market",
-    );
-    socketRef.current = socket;
-
-    socket.onopen = () => {
-      if (socketRef.current !== socket) return;
-
-      setSocketState("connected");
-      subscribedIdsRef.current = [];
-      replaceSubscriptions(desiredIdsRef.current, true);
-
-      clearHeartbeat();
-      heartbeatRef.current = setInterval(() => {
-        if (socket.readyState === WebSocket.OPEN) socket.send("PING");
-      }, 10_000);
-    };
-
-    socket.onmessage = (evt) => {
-      if (socketRef.current !== socket || evt.data === "PONG") return;
-
-      const data = JSON.parse(evt.data);
-      const messages = Array.isArray(data) ? data : [data];
-
-      for (const msg of messages) {
-        handleMessage(msg);
+  const connect = useCallback(
+    function connectSocket() {
+      if (
+        socketRef.current?.readyState === WebSocket.CONNECTING ||
+        socketRef.current?.readyState === WebSocket.OPEN
+      ) {
+        return;
       }
-    };
 
-    socket.onclose = () => {
-      if (socketRef.current !== socket) return;
+      const socket = new WebSocket(
+        "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+      );
+      socketRef.current = socket;
 
-      socketRef.current = null;
-      subscribedIdsRef.current = [];
-      clearHeartbeat();
-      setSocketState("disconnected");
+      socket.onopen = () => {
+        if (socketRef.current !== socket) return;
 
-      if (!intentionallyClosedRef.current) {
-        reconnectTimerRef.current = setTimeout(() => {
-          reconnectTimerRef.current = null;
-          connect();
-        }, 2_000);
-      }
-    };
+        setSocketState("connected");
+        subscribedIdsRef.current = [];
+        initializedAssetIdsRef.current = new Set();
+        replaceSubscriptions(desiredIdsRef.current, true);
 
-    socket.onerror = () => socket.close();
-  }, [clearHeartbeat, handleMessage, replaceSubscriptions]);
+        clearHeartbeat();
+        heartbeatRef.current = setInterval(() => {
+          if (socket.readyState === WebSocket.OPEN) socket.send("PING");
+        }, 10_000);
+      };
+
+      socket.onmessage = (evt) => {
+        if (socketRef.current !== socket || evt.data === "PONG") return;
+
+        try {
+          const data: unknown = JSON.parse(evt.data);
+          const messages = Array.isArray(data) ? data : [data];
+
+          for (const msg of messages) {
+            if (isMarketMessage(msg)) handleMessage(msg);
+          }
+        } catch (error) {
+          console.error("Unable to parse market WebSocket message", error);
+        }
+      };
+
+      socket.onclose = () => {
+        if (socketRef.current !== socket) return;
+
+        socketRef.current = null;
+        subscribedIdsRef.current = [];
+        initializedAssetIdsRef.current = new Set();
+        clearHeartbeat();
+        setSocketState("disconnected");
+
+        if (!intentionallyClosedRef.current) {
+          reconnectTimerRef.current = setTimeout(() => {
+            reconnectTimerRef.current = null;
+            connectSocket();
+          }, 2_000);
+        }
+      };
+
+      socket.onerror = () => socket.close();
+    },
+    [clearHeartbeat, handleMessage, replaceSubscriptions],
+  );
 
   useEffect(() => {
     intentionallyClosedRef.current = false;
@@ -353,6 +379,7 @@ function NFLMarketDashboard() {
       clearHeartbeat();
       subscribedIdsRef.current = [];
       activeAssetIdsRef.current = new Set();
+      initializedAssetIdsRef.current = new Set();
 
       const socket = socketRef.current;
       socketRef.current = null;
@@ -364,7 +391,7 @@ function NFLMarketDashboard() {
   useEffect(() => {
     desiredIdsRef.current = subscriptionIds;
     activeAssetIdsRef.current = new Set(subscriptionIds);
-    setPricesPerMarket(new Map());
+    initializedAssetIdsRef.current = new Set();
     replaceSubscriptions(subscriptionIds);
   }, [replaceSubscriptions, subscriptionIds]);
 
@@ -395,8 +422,11 @@ function NFLMarketDashboard() {
         <label htmlFor="game-selection">Game</label>
         <select
           id="game-selection"
-          value={selectedGameId}
-          onChange={(e) => setSelectedGameId(e.target.value)}
+          value={selectedGame ? selectedGameId : ""}
+          onChange={(e) => {
+            setSelectedGameId(e.target.value);
+            setPricesPerMarket(new Map());
+          }}
         >
           <option value="" disabled>
             Select an NFL game
@@ -409,7 +439,7 @@ function NFLMarketDashboard() {
         </select>
       </section>
 
-      {!selectedGameId ? (
+      {!selectedGame ? (
         <section className="empty-state">
           <h2>Select a game</h2>
           <p>Choose a matchup above to view its live markets.</p>
@@ -419,7 +449,7 @@ function NFLMarketDashboard() {
           <header className="game-heading">
             <div>
               <h2>{selectedGame?.title}</h2>
-              <p>{new Date(selectedGame!.startTime).toLocaleString()}</p>
+              <p>{new Date(selectedGame.startTime).toLocaleString()}</p>
             </div>
             <span>{markets.length} outcomes</span>
           </header>

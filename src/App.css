@@ -272,6 +272,32 @@ thead th:first-child {
   color: #a84e48;
 }
 
+.price-cell.flash-up {
+  animation: price-flash-up 750ms ease-out;
+}
+
+.price-cell.flash-down {
+  animation: price-flash-down 750ms ease-out;
+}
+
+@keyframes price-flash-up {
+  from {
+    background-color: rgba(22, 163, 74, 0.28);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+@keyframes price-flash-down {
+  from {
+    background-color: rgba(220, 38, 38, 0.24);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
 .status-page {
   display: grid;
   min-height: 100vh;
@@ -279,6 +305,13 @@ thead th:first-child {
   place-items: center;
   color: #667287;
   text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .price-cell.flash-up,
+  .price-cell.flash-down {
+    animation-duration: 1ms;
+  }
 }
 
 @media (max-width: 650px) {

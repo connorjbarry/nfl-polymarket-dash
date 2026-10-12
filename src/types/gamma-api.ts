@@ -21,11 +21,26 @@ export type GammaEvent = {
   endDate: string;
 };
 
+export type FlashDirection = "up" | "down";
+
+export type PriceFlash = {
+  direction: FlashDirection;
+  sequence: number;
+};
+
+export type MarketFlashes = {
+  bid: PriceFlash | null;
+  ask: PriceFlash | null;
+  lastTrade: PriceFlash | null;
+  spread: PriceFlash | null;
+};
+
 export type MarketPrice = {
   bid: number | null;
   ask: number | null;
   lastTrade: number | null;
   tickSize: string | null;
+  flashes: MarketFlashes;
 };
 
 /**

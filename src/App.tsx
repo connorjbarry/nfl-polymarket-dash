@@ -1,8 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import "./App.css";
 import { getMarketsForGame, useGetNflGames } from "./utils/utils";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { MarketMessage, MarketPrice } from "./types/gamma-api";
+import type {
+  MarketMessage,
+  MarketPrice,
+  PriceFlash,
+} from "./types/gamma-api";
 
 const queryClient = new QueryClient();
 const EMPTY_PRICES: MarketPrice = {
@@ -10,7 +21,36 @@ const EMPTY_PRICES: MarketPrice = {
   ask: null,
   lastTrade: null,
   tickSize: null,
+  flashes: {
+    bid: null,
+    ask: null,
+    lastTrade: null,
+    spread: null,
+  },
 };
+
+function getSpread(bid: number | null, ask: number | null) {
+  return bid !== null && ask !== null ? ask - bid : null;
+}
+
+function getNextFlash(
+  previousValue: number | null,
+  nextValue: number | null,
+  currentFlash: PriceFlash | null,
+): PriceFlash | null {
+  if (
+    previousValue === null ||
+    nextValue === null ||
+    previousValue === nextValue
+  ) {
+    return currentFlash;
+  }
+
+  return {
+    direction: nextValue > previousValue ? "up" : "down",
+    sequence: (currentFlash?.sequence ?? 0) + 1,
+  };
+}
 
 function App() {
   return (
@@ -63,22 +103,36 @@ function NFLMarketDashboard() {
       if (!activeAssetIdsRef.current.has(msg.asset_id)) return;
 
       setPricesPerMarket((prev) => {
-        const next = new Map(prev);
-
         const existing = prev.get(msg.asset_id);
+        const bid =
+          msg.bids.length > 0
+            ? Math.max(...msg.bids.map((b) => Number(b.price)))
+            : null;
+        const ask =
+          msg.asks.length > 0
+            ? Math.min(...msg.asks.map((a) => Number(a.price)))
+            : null;
+        const lastTrade = msg.last_trade_price
+          ? Number(msg.last_trade_price)
+          : (existing?.lastTrade ?? null);
+
+        if (
+          existing &&
+          existing.bid === bid &&
+          existing.ask === ask &&
+          existing.lastTrade === lastTrade &&
+          existing.tickSize === msg.tick_size
+        ) {
+          return prev;
+        }
+
+        const next = new Map(prev);
         next.set(msg.asset_id, {
-          bid:
-            msg.bids.length > 0
-              ? Math.max(...msg.bids.map((b) => Number(b.price)))
-              : null,
-          ask:
-            msg.asks.length > 0
-              ? Math.min(...msg.asks.map((a) => Number(a.price)))
-              : null,
-          lastTrade: msg.last_trade_price
-            ? Number(msg.last_trade_price)
-            : (existing?.lastTrade ?? null),
+          bid,
+          ask,
+          lastTrade,
           tickSize: msg.tick_size,
+          flashes: existing?.flashes ?? EMPTY_PRICES.flashes,
         });
 
         return next;
@@ -91,20 +145,45 @@ function NFLMarketDashboard() {
       if (activePriceChanges.length === 0) return;
 
       setPricesPerMarket((prev) => {
-        const next = new Map(prev);
+        let next: Map<string, MarketPrice> | null = null;
 
         for (const change of activePriceChanges) {
-          const existing = next.get(change.asset_id) ?? EMPTY_PRICES;
+          const existing =
+            (next ?? prev).get(change.asset_id) ?? EMPTY_PRICES;
+          const bid = change.best_bid
+            ? Number(change.best_bid)
+            : existing.bid;
+          const ask = change.best_ask
+            ? Number(change.best_ask)
+            : existing.ask;
+
+          if (existing.bid === bid && existing.ask === ask) continue;
+
+          const previousSpread = getSpread(existing.bid, existing.ask);
+          const nextSpread = getSpread(bid, ask);
+          const flashes = {
+            ...existing.flashes,
+            bid: getNextFlash(existing.bid, bid, existing.flashes.bid),
+            ask: getNextFlash(existing.ask, ask, existing.flashes.ask),
+            spread: getNextFlash(
+              previousSpread,
+              nextSpread,
+              existing.flashes.spread,
+            ),
+          };
+
+          if (!next) next = new Map(prev);
 
           next.set(change.asset_id, {
-            bid: change.best_bid ? Number(change.best_bid) : existing.bid,
-            ask: change.best_ask ? Number(change.best_ask) : existing.ask,
+            bid,
+            ask,
             lastTrade: existing.lastTrade,
             tickSize: existing.tickSize,
+            flashes,
           });
         }
 
-        return next;
+        return next ?? prev;
       });
 
       return;
@@ -112,12 +191,24 @@ function NFLMarketDashboard() {
       if (!activeAssetIdsRef.current.has(msg.asset_id)) return;
 
       setPricesPerMarket((prev) => {
-        const next = new Map(prev);
         const existing = prev.get(msg.asset_id) ?? EMPTY_PRICES;
+        const lastTrade = Number(msg.price);
+
+        if (existing.lastTrade === lastTrade) return prev;
+
+        const next = new Map(prev);
 
         next.set(msg.asset_id, {
           ...existing,
-          lastTrade: Number(msg.price),
+          lastTrade,
+          flashes: {
+            ...existing.flashes,
+            lastTrade: getNextFlash(
+              existing.lastTrade,
+              lastTrade,
+              existing.flashes.lastTrade,
+            ),
+          },
         });
 
         return next;
@@ -385,7 +476,7 @@ function NFLMarketDashboard() {
   );
 }
 
-function MarketRow({
+const MarketRow = memo(function MarketRow({
   market,
   prices,
 }: {
@@ -396,7 +487,7 @@ function MarketRow({
   const ask = prices?.ask ?? null;
   const lastTrade = prices?.lastTrade ?? null;
   const tickSize = prices?.tickSize ?? null;
-  const spread = bid !== null && ask !== null ? ask - bid : null;
+  const spread = getSpread(bid, ask);
 
   return (
     <tr className="market-row">
@@ -404,15 +495,59 @@ function MarketRow({
         <strong>{market.outcome}</strong>
         <small>{market.question}</small>
       </th>
-      <td className="bid" data-label="Best bid">
-        {formatPrice(bid, tickSize)}
-      </td>
-      <td className="ask" data-label="Best ask">
-        {formatPrice(ask, tickSize)}
-      </td>
-      <td data-label="Last trade">{formatPrice(lastTrade, tickSize)}</td>
-      <td data-label="Spread">{formatPrice(spread, tickSize)}</td>
+      <PriceCell
+        className="bid"
+        flash={prices?.flashes.bid ?? null}
+        label="Best bid"
+        tickSize={tickSize}
+        value={bid}
+      />
+      <PriceCell
+        className="ask"
+        flash={prices?.flashes.ask ?? null}
+        label="Best ask"
+        tickSize={tickSize}
+        value={ask}
+      />
+      <PriceCell
+        flash={prices?.flashes.lastTrade ?? null}
+        label="Last trade"
+        tickSize={tickSize}
+        value={lastTrade}
+      />
+      <PriceCell
+        flash={prices?.flashes.spread ?? null}
+        label="Spread"
+        tickSize={tickSize}
+        value={spread}
+      />
     </tr>
+  );
+});
+
+function PriceCell({
+  className = "",
+  flash,
+  label,
+  tickSize,
+  value,
+}: {
+  className?: string;
+  flash: PriceFlash | null;
+  label: string;
+  tickSize: string | null;
+  value: number | null;
+}) {
+  const flashClass = flash ? `flash-${flash.direction}` : "";
+
+  return (
+    <td
+      key={`${label}-${flash?.sequence ?? 0}`}
+      className={`price-cell ${className} ${flashClass}`.trim()}
+      data-label={label}
+    >
+      {formatPrice(value, tickSize)}
+    </td>
   );
 }
 

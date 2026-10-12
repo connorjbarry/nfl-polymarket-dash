@@ -150,98 +150,110 @@ function NFLMarketDashboard() {
     };
   }, [selectedGameId]);
 
-  if (isLoading) return <>Loading all NFL games...</>;
-  if (error) return <>Error fetching NFL games: {error.message}</>;
+  if (isLoading)
+    return <main className="status-page">Loading all NFL games...</main>;
+  if (error)
+    return (
+      <main className="status-page">
+        Error fetching NFL games: {error.message}
+      </main>
+    );
 
   return (
-    <main>
-      <header>
-        <h1>NFL Market Dashboard</h1>
+    <main className="app-shell">
+      <header className="app-header">
+        <div>
+          <p className="eyebrow">Polymarket · NFL</p>
+          <h1>Live Market Dashboard</h1>
+          <p>Moneyline and full-game totals in one live view.</p>
+        </div>
+        <span className={`connection-status ${socketState}`}>
+          <span />
+          {socketState === "connected" ? "Live" : "Disconnected"}
+        </span>
       </header>
 
-      <section>
+      <section className="game-picker">
+        <label htmlFor="game-selection">Game</label>
         <select
           id="game-selection"
           value={selectedGameId}
           onChange={(e) => setSelectedGameId(e.target.value)}
         >
-          {/* pad the list with an empty option to not mislead initial load selection */}
           <option value="" disabled>
-            Select a NFL game
+            Select an NFL game
           </option>
-
           {games?.map((g) => (
             <option key={g.id} value={g.id}>
-              {g.title} - {new Date(g.startTime).toLocaleString()}
+              {g.title} · {new Date(g.startTime).toLocaleString()}
             </option>
           ))}
         </select>
       </section>
 
-      <section>
-        {!selectedGameId ? (
-          <p>Please select a game to see its markets.</p>
-        ) : (
-          <>
-            <h2>
-              Markets for {selectedGame?.title} -
-              {new Date(selectedGame!.startTime).toLocaleString()}
-            </h2>
-            <h3>
-              Connection status:{" "}
-              {socketState === "connected" ? "Connected" : "Disconnected"}
-            </h3>
+      {!selectedGameId ? (
+        <section className="empty-state">
+          <h2>Select a game</h2>
+          <p>Choose a matchup above to view its live markets.</p>
+        </section>
+      ) : (
+        <section className="market-panel">
+          <header className="game-heading">
+            <div>
+              <h2>{selectedGame?.title}</h2>
+              <p>{new Date(selectedGame!.startTime).toLocaleString()}</p>
+            </div>
+            <span>{markets.length} outcomes</span>
+          </header>
 
-            {markets.length === 0 ? (
-              <p>No markets found for this game.</p>
-            ) : (
-              <>
-                <table>
-                  <thead>
-                    <tr>
-                      <th scope="col">Outcome</th>
-                      <th scope="col">Best bid</th>
-                      <th scope="col">Best ask</th>
-                      <th scope="col">Last trade</th>
-                      <th scope="col">Spread</th>
-                    </tr>
-                  </thead>
+          {markets.length === 0 ? (
+            <p className="table-empty">No markets found for this game.</p>
+          ) : (
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">Outcome</th>
+                    <th scope="col">Best bid</th>
+                    <th scope="col">Best ask</th>
+                    <th scope="col">Last trade</th>
+                    <th scope="col">Spread</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="market-group-row">
+                    <th colSpan={5} scope="rowgroup">
+                      Game outcome · Moneyline
+                    </th>
+                  </tr>
+                  {!(moneylines.length === 0) &&
+                    moneylines.map((m) => (
+                      <MarketRow
+                        key={m.clobTokenId}
+                        market={m}
+                        prices={pricesPerMarket.get(m.clobTokenId)}
+                      />
+                    ))}
 
-                  <tbody>
-                    <tr>
-                      <th colSpan={5} scope="rowgroup">
-                        Moneyline
-                      </th>
-                    </tr>
-                    {!(moneylines.length === 0) &&
-                      moneylines.map((m) => (
-                        <MarketRow
-                          key={m.clobTokenId}
-                          market={m}
-                          prices={pricesPerMarket.get(m.clobTokenId)}
-                        />
-                      ))}
-
-                    <tr>
-                      <th colSpan={5} scope="rowgroup">
-                        Full-game totals
-                      </th>
-                    </tr>
-                    {!(totals.length === 0) &&
-                      totals.map((t) => (
-                        <MarketRow
-                          key={t.clobTokenId}
-                          market={t}
-                          prices={pricesPerMarket.get(t.clobTokenId)}
-                        />
-                      ))}
-                  </tbody>
-                </table>
-              </>
-            )}
-          </>
-        )}
-      </section>
+                  <tr className="market-group-row">
+                    <th colSpan={5} scope="rowgroup">
+                      Full-game totals · {totals.length / 2} lines
+                    </th>
+                  </tr>
+                  {!(totals.length === 0) &&
+                    totals.map((t) => (
+                      <MarketRow
+                        key={t.clobTokenId}
+                        market={t}
+                        prices={pricesPerMarket.get(t.clobTokenId)}
+                      />
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
     </main>
   );
 }
@@ -251,7 +263,7 @@ function MarketRow({
   prices,
 }: {
   market: ReturnType<typeof getMarketsForGame>[number];
-  prices: MarketPrice | null;
+  prices?: MarketPrice;
 }) {
   const bid = prices?.bid ?? null;
   const ask = prices?.ask ?? null;
@@ -259,16 +271,22 @@ function MarketRow({
   const spread = bid !== null && ask !== null ? ask - bid : null;
 
   return (
-    <tr>
+    <tr className="market-row">
       <th scope="row">
-        {market.question} — {market.outcome}
+        <strong>{market.outcome}</strong>
+        <small>{market.question}</small>
       </th>
-      <td>{bid}</td>
-      <td>{ask}</td>
-      <td>{lastTrade}</td>
-      <td>{spread}</td>
+      <td className="bid" data-label="Best bid">{formatPrice(bid)}</td>
+      <td className="ask" data-label="Best ask">{formatPrice(ask)}</td>
+      <td data-label="Last trade">{formatPrice(lastTrade)}</td>
+      <td data-label="Spread">{formatPrice(spread)}</td>
     </tr>
   );
 }
+
+function formatPrice(price: number | null) {
+  return price === null || Number.isNaN(price) ? "—" : price.toFixed(3);
+}
+
 
 export default App;

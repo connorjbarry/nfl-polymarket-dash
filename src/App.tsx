@@ -1,10 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 import { getMarketsForGame, useGetNflGames } from "./utils/utils";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { MarketMessage, MarketPrice } from "./types/gamma-api";
 
 const queryClient = new QueryClient();
+const EMPTY_PRICES: MarketPrice = {
+  bid: null,
+  ask: null,
+  lastTrade: null,
+  tickSize: null,
+};
 
 function App() {
   return (
@@ -20,6 +26,15 @@ function NFLMarketDashboard() {
   const [pricesPerMarket, setPricesPerMarket] = useState(
     () => new Map<string, MarketPrice>(),
   );
+  const socketRef = useRef<WebSocket | null>(null);
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const subscribedIdsRef = useRef<string[]>([]);
+  const desiredIdsRef = useRef<string[]>([]);
+  const activeAssetIdsRef = useRef(new Set<string>());
+  const intentionallyClosedRef = useRef(false);
 
   const { data: games, isLoading, error } = useGetNflGames();
 
@@ -38,14 +53,15 @@ function NFLMarketDashboard() {
     return markets.filter((m) => m.type === "total");
   }, [markets]);
 
-  const EMPTY_PRICES = {
-    bid: null,
-    ask: null,
-    lastTrade: null,
-  };
+  const subscriptionIds = useMemo(
+    () => markets.map((market) => market.clobTokenId),
+    [markets],
+  );
 
-  const handleMessage = (msg: MarketMessage) => {
+  const handleMessage = useCallback((msg: MarketMessage) => {
     if (msg.event_type === "book") {
+      if (!activeAssetIdsRef.current.has(msg.asset_id)) return;
+
       setPricesPerMarket((prev) => {
         const next = new Map(prev);
 
@@ -62,21 +78,29 @@ function NFLMarketDashboard() {
           lastTrade: msg.last_trade_price
             ? Number(msg.last_trade_price)
             : (existing?.lastTrade ?? null),
+          tickSize: msg.tick_size,
         });
 
         return next;
       });
     } else if (msg.event_type === "price_change") {
+      const activePriceChanges = msg.price_changes.filter((change) =>
+        activeAssetIdsRef.current.has(change.asset_id),
+      );
+
+      if (activePriceChanges.length === 0) return;
+
       setPricesPerMarket((prev) => {
         const next = new Map(prev);
 
-        for (const change of msg.price_changes) {
+        for (const change of activePriceChanges) {
           const existing = next.get(change.asset_id) ?? EMPTY_PRICES;
 
           next.set(change.asset_id, {
             bid: change.best_bid ? Number(change.best_bid) : existing.bid,
             ask: change.best_ask ? Number(change.best_ask) : existing.ask,
             lastTrade: existing.lastTrade,
+            tickSize: existing.tickSize,
           });
         }
 
@@ -85,6 +109,8 @@ function NFLMarketDashboard() {
 
       return;
     } else if (msg.event_type === "last_trade_price") {
+      if (!activeAssetIdsRef.current.has(msg.asset_id)) return;
+
       setPricesPerMarket((prev) => {
         const next = new Map(prev);
         const existing = prev.get(msg.asset_id) ?? EMPTY_PRICES;
@@ -96,67 +122,160 @@ function NFLMarketDashboard() {
 
         return next;
       });
-      // } else if (msg.event_type === "tick_size_change") {
+    } else if (msg.event_type === "tick_size_change") {
+      if (!activeAssetIdsRef.current.has(msg.asset_id)) return;
+
+      setPricesPerMarket((prev) => {
+        const existing = prev.get(msg.asset_id) ?? EMPTY_PRICES;
+
+        if (existing.tickSize === msg.new_tick_size) return prev;
+
+        const next = new Map(prev);
+        next.set(msg.asset_id, {
+          ...existing,
+          tickSize: msg.new_tick_size,
+        });
+
+        return next;
+      });
     }
-  };
+  }, []);
 
-  // socket logic
-  useEffect(() => {
-    // if no markets, dont try to connect to ws with no subscription id
-    if (markets.length === 0) return;
+  const clearHeartbeat = useCallback(() => {
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+      heartbeatRef.current = null;
+    }
+  }, []);
 
-    let stopped = false;
-    let socket: WebSocket;
-    let heartbeat: ReturnType<typeof setInterval>;
-    const subscriptionIds = markets.map((m) => m.clobTokenId);
+  const replaceSubscriptions = useCallback(
+    (nextIds: string[], initial = false) => {
+      const socket = socketRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
-    const connect = () => {
-      socket = new WebSocket(
-        "wss://ws-subscriptions-clob.polymarket.com/ws/market",
-      );
+      const previousIds = subscribedIdsRef.current;
+      const unchanged =
+        previousIds.length === nextIds.length &&
+        previousIds.every((id, index) => id === nextIds[index]);
 
-      socket.onopen = () => {
-        setSocketState("connected");
+      if (unchanged) return;
 
+      if (previousIds.length > 0) {
         socket.send(
           JSON.stringify({
-            assets_ids: subscriptionIds,
-            type: "market",
-            initial_dump: true,
+            operation: "unsubscribe",
+            assets_ids: previousIds,
           }),
         );
+      }
 
-        heartbeat = setInterval(() => socket.send("PING"), 10_000);
-      };
+      if (nextIds.length > 0) {
+        socket.send(
+          JSON.stringify(
+            initial || previousIds.length === 0
+              ? {
+                  assets_ids: nextIds,
+                  type: "market",
+                  initial_dump: true,
+                }
+              : {
+                  operation: "subscribe",
+                  assets_ids: nextIds,
+                },
+          ),
+        );
+      }
 
-      socket.onmessage = (evt) => {
-        // dont do anything if message is for keep-alive purposes or ws is stopped
-        if (stopped || evt.data === "PONG") return;
+      subscribedIdsRef.current = [...nextIds];
+    },
+    [],
+  );
 
-        const data = JSON.parse(evt.data);
-        const messages = Array.isArray(data) ? data : [data];
+  const connect = useCallback(() => {
+    if (
+      socketRef.current?.readyState === WebSocket.CONNECTING ||
+      socketRef.current?.readyState === WebSocket.OPEN
+    ) {
+      return;
+    }
 
-        for (const msg of messages) {
-          handleMessage(msg);
-        }
-      };
+    const socket = new WebSocket(
+      "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+    );
+    socketRef.current = socket;
 
-      socket.onclose = () => {
-        setSocketState("disconnected");
-        if (stopped) return;
-        clearInterval(heartbeat);
-      };
+    socket.onopen = () => {
+      if (socketRef.current !== socket) return;
+
+      setSocketState("connected");
+      subscribedIdsRef.current = [];
+      replaceSubscriptions(desiredIdsRef.current, true);
+
+      clearHeartbeat();
+      heartbeatRef.current = setInterval(() => {
+        if (socket.readyState === WebSocket.OPEN) socket.send("PING");
+      }, 10_000);
     };
 
+    socket.onmessage = (evt) => {
+      if (socketRef.current !== socket || evt.data === "PONG") return;
+
+      const data = JSON.parse(evt.data);
+      const messages = Array.isArray(data) ? data : [data];
+
+      for (const msg of messages) {
+        handleMessage(msg);
+      }
+    };
+
+    socket.onclose = () => {
+      if (socketRef.current !== socket) return;
+
+      socketRef.current = null;
+      subscribedIdsRef.current = [];
+      clearHeartbeat();
+      setSocketState("disconnected");
+
+      if (!intentionallyClosedRef.current) {
+        reconnectTimerRef.current = setTimeout(() => {
+          reconnectTimerRef.current = null;
+          connect();
+        }, 2_000);
+      }
+    };
+
+    socket.onerror = () => socket.close();
+  }, [clearHeartbeat, handleMessage, replaceSubscriptions]);
+
+  useEffect(() => {
+    intentionallyClosedRef.current = false;
     connect();
 
     return () => {
-      stopped = true;
-      socket.close();
-      clearInterval(heartbeat);
+      intentionallyClosedRef.current = true;
+
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+
+      clearHeartbeat();
+      subscribedIdsRef.current = [];
+      activeAssetIdsRef.current = new Set();
+
+      const socket = socketRef.current;
+      socketRef.current = null;
+      socket?.close();
       setSocketState("disconnected");
     };
-  }, [selectedGameId]);
+  }, [clearHeartbeat, connect]);
+
+  useEffect(() => {
+    desiredIdsRef.current = subscriptionIds;
+    activeAssetIdsRef.current = new Set(subscriptionIds);
+    setPricesPerMarket(new Map());
+    replaceSubscriptions(subscriptionIds);
+  }, [replaceSubscriptions, subscriptionIds]);
 
   if (isLoading)
     return <main className="status-page">Loading all NFL games...</main>;
@@ -276,6 +395,7 @@ function MarketRow({
   const bid = prices?.bid ?? null;
   const ask = prices?.ask ?? null;
   const lastTrade = prices?.lastTrade ?? null;
+  const tickSize = prices?.tickSize ?? null;
   const spread = bid !== null && ask !== null ? ask - bid : null;
 
   return (
@@ -285,19 +405,36 @@ function MarketRow({
         <small>{market.question}</small>
       </th>
       <td className="bid" data-label="Best bid">
-        {formatPrice(bid)}
+        {formatPrice(bid, tickSize)}
       </td>
       <td className="ask" data-label="Best ask">
-        {formatPrice(ask)}
+        {formatPrice(ask, tickSize)}
       </td>
-      <td data-label="Last trade">{formatPrice(lastTrade)}</td>
-      <td data-label="Spread">{formatPrice(spread)}</td>
+      <td data-label="Last trade">{formatPrice(lastTrade, tickSize)}</td>
+      <td data-label="Spread">{formatPrice(spread, tickSize)}</td>
     </tr>
   );
 }
 
-function formatPrice(price: number | null) {
-  return price === null || Number.isNaN(price) ? "—" : price.toFixed(3);
+function getTickDecimals(tickSize: string | null) {
+  if (!tickSize || !tickSize.includes(".")) return 0;
+  return tickSize.split(".")[1].length;
+}
+
+function formatPrice(price: number | null, tickSize: string | null) {
+  if (price === null || Number.isNaN(price)) return "—";
+
+  if (!tickSize) return price.toFixed(3);
+
+  const numericTick = Number(tickSize);
+  if (!Number.isFinite(numericTick) || numericTick <= 0) {
+    return price.toFixed(3);
+  }
+
+  const rounded =
+    Math.round((price + Number.EPSILON) / numericTick) * numericTick;
+
+  return rounded.toFixed(getTickDecimals(tickSize));
 }
 
 export default App;

@@ -25,6 +25,7 @@ export type MarketPrice = {
   bid: number | null;
   ask: number | null;
   lastTrade: number | null;
+  tickSize: string | null;
 };
 
 /**
@@ -122,8 +123,18 @@ type LastTradeMarketMessage = {
   transaction_hash: string;
 };
 
+type TickSizeChangeMarketMessage = {
+  event_type: "tick_size_change";
+  market: string;
+  asset_id: string;
+  old_tick_size: string;
+  new_tick_size: string;
+  timestamp: string;
+};
+
 // Union type of all the ws messages
 export type MarketMessage =
   | BookMarketMessage
   | PriceChangeMarketMessage
-  | LastTradeMarketMessage;
+  | LastTradeMarketMessage
+  | TickSizeChangeMarketMessage;

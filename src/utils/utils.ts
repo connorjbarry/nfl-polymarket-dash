@@ -134,7 +134,18 @@ export const getMarketsForGame = (gameEv: GammaEvent | null) => {
         totalRegex.test(m.question.slice(totalPrefix.length))),
   );
 
-  return filteredMarkets.flatMap((m) => {
+  return filteredMarkets
+    .sort((firstMarket, secondMarket) => {
+      const firstLine = Number(firstMarket.question.slice(totalPrefix.length));
+      const secondLine = Number(
+        secondMarket.question.slice(totalPrefix.length),
+      );
+
+      if (Number.isNaN(firstLine)) return -1;
+      if (Number.isNaN(secondLine)) return 1;
+      return firstLine - secondLine;
+    })
+    .flatMap((m) => {
     const totalLineText = m.question.slice(totalPrefix.length);
 
     const outcomes = parseStringArray(m.outcomes);
@@ -152,5 +163,5 @@ export const getMarketsForGame = (gameEv: GammaEvent | null) => {
       type: m.question === gameEv.title ? "moneyline" : "total",
       totalLine: totalRegex.test(totalLineText) ? Number(totalLineText) : null,
     }));
-  });
+    });
 };

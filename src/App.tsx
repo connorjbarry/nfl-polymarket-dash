@@ -1,19 +1,8 @@
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 import { getMarketsForGame, useGetNflGames } from "./utils/utils";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type {
-  MarketMessage,
-  MarketPrice,
-  PriceFlash,
-} from "./types/gamma-api";
+import type { MarketMessage, MarketPrice, PriceFlash } from "./types/gamma-api";
 
 const queryClient = new QueryClient();
 const SUPPORTED_EVENT_TYPES = new Set([
@@ -81,9 +70,7 @@ function NFLMarketDashboard() {
   );
   const socketRef = useRef<WebSocket | null>(null);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const subscribedIdsRef = useRef<string[]>([]);
   const desiredIdsRef = useRef<string[]>([]);
   const activeAssetIdsRef = useRef(new Set<string>());
@@ -165,14 +152,9 @@ function NFLMarketDashboard() {
         let next: Map<string, MarketPrice> | null = null;
 
         for (const change of activePriceChanges) {
-          const existing =
-            (next ?? prev).get(change.asset_id) ?? EMPTY_PRICES;
-          const bid = change.best_bid
-            ? Number(change.best_bid)
-            : existing.bid;
-          const ask = change.best_ask
-            ? Number(change.best_ask)
-            : existing.ask;
+          const existing = (next ?? prev).get(change.asset_id) ?? EMPTY_PRICES;
+          const bid = change.best_bid ? Number(change.best_bid) : existing.bid;
+          const ask = change.best_ask ? Number(change.best_ask) : existing.ask;
 
           if (existing.bid === bid && existing.ask === ask) continue;
 
